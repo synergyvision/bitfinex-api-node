@@ -120,6 +120,26 @@ describe('WSv2 lifetime', () => {
     })
   })
 
+  it('close: clears connection state', (done) => {
+    const wss = new MockWSv2Server()
+    const ws = createTestWSv2Instance()
+    ws._onWSClose = () => {} // disable fallback reset
+
+    ws.open()
+    ws.on('open', () => {
+      assert(ws._ws !== null)
+      assert(ws._isOpen)
+
+      ws.close().then(() => {
+        assert(ws._ws == null)
+        assert(!ws._isOpen)
+
+        wss.close()
+        done()
+      })
+    })
+  })
+
   it('auth: fails to auth twice', (done) => {
     const wss = new MockWSv2Server()
     const ws = createTestWSv2Instance()
@@ -351,12 +371,12 @@ describe('WSv2 seq audit', () => {
       ws._onWSMessage(JSON.stringify([0, 'tu', [], 6, 6]))
       ws._onWSMessage(JSON.stringify([42, [], 7]))
       ws._onWSMessage(JSON.stringify([42, [], 8]))
-      ws._onWSMessage(JSON.stringify([42, [], 9]))  //
+      ws._onWSMessage(JSON.stringify([42, [], 9])) //
       ws._onWSMessage(JSON.stringify([42, [], 13])) // error
       ws._onWSMessage(JSON.stringify([42, [], 14]))
       ws._onWSMessage(JSON.stringify([42, [], 15]))
 
-      assert.equal(errorsSeen, 2)
+      assert.equal(errorsSeen, 6)
       wss.close()
       done()
     })
@@ -601,6 +621,20 @@ describe('WSv2 channel msg handling', () => {
     }
 
     WSv2._notifyListenerGroup(lg, [0, 'test', [0, 'tu']], false)
+  })
+
+  it('_notifyListenerGroup: doesn\'t fail on missing data if filtering', (done) => {
+    const lg = {
+      'test': [{
+        filter: { 1: 'on' },
+        cb: () => {
+          done(new Error('filter should not have matched'))
+        }
+      }]
+    }
+
+    WSv2._notifyListenerGroup(lg, [0, 'test'], false)
+    done()
   })
 
   it('_propagateMessageToListeners: notifies all matching listeners', (done) => {
@@ -1058,9 +1092,9 @@ describe('WSv2 event msg handling', () => {
   it('_handleConfigEvent: emits error if config failed', (done) => {
     const ws = new WSv2()
     ws.on('error', (err) => {
-      if (err.code === 42) done()
+      if (err.message.indexOf('42') !== -1) done()
     })
-    ws._handleConfigEvent({ status: 'bad', code: 42 })
+    ws._handleConfigEvent({ status: 'bad', flags: 42 })
   })
 
   it('_handleAuthEvent: emits an error on auth fail', (done) => {
@@ -1112,6 +1146,67 @@ describe('WSv2 event msg handling', () => {
     ws._handleSubscribedEvent({ chanId: 42, channel: 'test', extra: 'stuff' })
     ws._handleUnsubscribedEvent({ chanId: 42, channel: 'test', extra: 'stuff' })
     assert(Object.keys(ws._channelMap).length === 0)
+  })
+
+  it('_handleInfoEvent: passes message to relevant listeners (raw access)', (done) => {
+    const wss = new MockWSv2Server()
+    const ws = createTestWSv2Instance()
+    ws.once('open', () => {
+      let n = 0
+
+      ws._infoListeners[42] = [
+        () => { n += 1 },
+        () => { n += 2 }
+      ]
+
+      ws._handleInfoEvent({ code: 42 })
+
+      assert.equal(n, 3)
+      wss.close()
+      done()
+    })
+
+    ws.open()
+  })
+
+  it('_handleInfoEvent: passes message to relevant listeners', (done) => {
+    const wss = new MockWSv2Server()
+    const ws = createTestWSv2Instance()
+    ws.once('open', () => {
+      let n = 0
+
+      ws.onInfoMessage(42, () => { n += 1 })
+      ws.onInfoMessage(42, () => { n += 2 })
+      ws._handleInfoEvent({ code: 42 })
+
+      assert.equal(n, 3)
+      wss.close()
+      done()
+    })
+
+    ws.open()
+  })
+
+  it('_handleInfoEvent: passes message to relevant named listeners', (done) => {
+    const wss = new MockWSv2Server()
+    const ws = createTestWSv2Instance()
+    ws.once('open', () => {
+      let n = 0
+
+      ws.onServerRestart(() => { n += 1 })
+      ws.onMaintenanceStart(() => { n += 10 })
+      ws.onMaintenanceEnd(() => { n += 100 })
+
+      ws._handleInfoEvent({ code: WSv2.info.SERVER_RESTART })
+      ws._handleInfoEvent({ code: WSv2.info.MAINTENANCE_START })
+      ws._handleInfoEvent({ code: WSv2.info.MAINTENANCE_END })
+
+      assert.equal(n, 111)
+      wss.close()
+      done()
+    })
+
+    ws.open()
   })
 
   it('_handleInfoEvent: closes & emits error if not on api v2', (done) => {
